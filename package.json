@@ -7,7 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:init": "wrangler d1 execute cdt_monitor --local --file=./schema.sql",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit false --module commonjs --moduleResolution node --outDir .wrangler/tests && node --test tests/*.test.cjs"
   },
   "cloudflare": {
     "bindings": {

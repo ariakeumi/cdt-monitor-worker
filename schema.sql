@@ -39,22 +39,6 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_login_ip_time ON login_attempts (ip, attempt_time);
 
-CREATE TABLE IF NOT EXISTS traffic_hourly (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  account_id INTEGER,
-  traffic REAL,
-  recorded_at INTEGER
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_traffic_hourly_unique ON traffic_hourly (account_id, recorded_at);
-
-CREATE TABLE IF NOT EXISTS traffic_daily (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  account_id INTEGER,
-  traffic REAL,
-  recorded_at INTEGER
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_traffic_daily_unique ON traffic_daily (account_id, recorded_at);
-
 CREATE TABLE IF NOT EXISTS billing_cache (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL,

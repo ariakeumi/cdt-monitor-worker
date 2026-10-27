@@ -1,9 +1,9 @@
 # CDT-Monitor Worker ☁️
 
 > [wang4386/CDT-Monitor](https://github.com/wang4386/CDT-Monitor) 的 **Cloudflare Workers 移植版**
-> 阿里云 CDT 流量监控与自动化熔断工具，完整保留原版全部功能，零服务器成本部署。
+> 阿里云 CDT 流量监控与自动化熔断工具，支持 Cloudflare 免费套餐部署。
 
-## 功能（与原版 100% 对齐）
+## 功能
 
 - ✅ **多账号聚合监控** — 统一面板管理多个阿里云账号 CDT 流量与 ECS 实例状态
 - ✅ **流量熔断** — 阈值自定义（默认 95%），超限自动停机（普通/节省停机）或仅告警
@@ -11,10 +11,9 @@
 - ✅ **定时任务** — 每日定时开关机计划（Asia/Shanghai 时区）
 - ✅ **通知推送** — SMTP 邮件 / Telegram / Webhook，支持测试发送
 - ✅ **费用分析** — 余额 + 实例当月账单（BSS API，带 6 小时缓存）
-- ✅ **历史图表** — 近 24 小时曲线 + 近 30 天柱状图（ECharts）
 - ✅ **系统日志** — 动作日志 / 心跳日志双 Tab，自动清理
 - ✅ **登录保护** — HMAC 签名会话 Cookie + IP 失败锁定（15 分钟 5 次）
-- ✅ **前端面板** — 原版 Vue + Tailwind 面板，未改动一行 UI 逻辑
+- ✅ **前端面板** — Vue + Tailwind 面板，展示当前流量和实例状态
 
 ## 架构对比
 
@@ -106,6 +105,18 @@ curl "http://localhost:8787/cdn-cgi/local/scheduled" -X POST      # 手动触发
 - 通知渠道 SMTP 依赖 Workers 的 Socket API，免费计划可用
 - Telegram 支持自定义 API 代理地址（`proxy_type=custom`）
 - 数据存在 Cloudflare D1（免费 5GB），账号密钥以明文存储于 D1（与原版 SQLite 一致），请勿公开面板地址
+
+## CPU 开销与验证
+
+Workers 免费套餐的每次调用 CPU 上限为 [10ms](https://developers.cloudflare.com/workers/platform/limits/#cpu-time)，等待网络和数据库响应的时间不计入 CPU。多账号查询、签名、JSON 解析和数据库调用的处理开销仍会累积。
+
+- 当前监控时间直接按 UTC+8 格式化，避免逐行创建 `Intl.DateTimeFormat` 及其冷启动初始化；1992 年以前的时间仍使用时区数据库。
+- 已移除历史图表、ECharts 和小时/日流量统计，不再采集、查询或清理历史流量数据；每次成功刷新减少两次 D1 统计写入。已有数据库中的旧统计表保留，不再使用。
+- 静态 HTML/JS/CSS 请求直接交给 Assets，不执行 D1 初始化检查。
+- 日志、账单缓存和旧登录记录每天清理一次；执行日期保存在 D1，失败后会在后续监控中重试。记录可能比原保留期限多保留至多约一天（任务正常运行时）。
+- 同一次多账号监控只读取一次最近心跳时间，保留原有心跳降频规则。Cron 仍每分钟运行，API 刷新间隔与定时开关机配置保持不变。
+
+运行 `npm run typecheck` 和 `npm test` 验证类型及时间边界、静态路由、每日清理和定时任务。部署后应在 Cloudflare Metrics/日志中分别检查 HTTP 与 Cron 的 CPU 时间及 `exceededCpu`；本地性能对比不能保证线上所有调用低于 10ms。
 
 ## License
 

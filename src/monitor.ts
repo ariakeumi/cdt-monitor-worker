@@ -3,7 +3,7 @@
  */
 import type { Account } from './aliyun';
 import { AliyunClient } from './aliyun';
-import { Store, shanghaiTimeStr, shanghaiHourMinute, shanghaiMonth, shanghaiHM, shanghaiDate, fmtTime } from './store';
+import { Store, shanghaiTimeStr, shanghaiHourMinute, shanghaiMonth, shanghaiDate, fmtTime } from './store';
 import { Notifier } from './notify';
 
 const REGION_NAMES: Record<string, string> = {
@@ -85,18 +85,17 @@ export class Monitor {
     const settings = await this.store.getAllSettings();
     const notifier = new Notifier(settings);
 
-    // 清理
-    await this.store.pruneLogs();
-    await this.store.pruneStats();
-    await this.store.pruneBillingCache();
-
-    // 每天 04:00 清理旧登录尝试（对应原版 VACUUM 时机的近似）
-    const { h, m } = shanghaiHourMinute();
-    if (h === '04' && m === '00') {
+    // 清理每天执行一次；标记持久化到 D1，冷启动或错过 04:00 也不会重复/漏跑。
+    const maintenanceDate = shanghaiDate(Math.floor(Date.now() / 1000));
+    if (settings['last_maintenance_date'] !== maintenanceDate) {
+      await this.store.pruneLogs();
+      await this.store.pruneBillingCache();
       await this.store.db.prepare('DELETE FROM login_attempts WHERE attempt_time < ?').bind(Math.floor(Date.now() / 1000) - 7 * 86400).run();
+      await this.store.saveSetting('last_maintenance_date', maintenanceDate);
     }
 
     const currentUserTime = shanghaiTimeStr();
+    const { m } = shanghaiHourMinute();
     const currentTime = Math.floor(Date.now() / 1000);
     const threshold = parseInt(settings['traffic_threshold'] || '95', 10) || 95;
     const shutdownMode = settings['shutdown_mode'] || 'KeepCharging';
@@ -106,6 +105,7 @@ export class Monitor {
 
     const accounts = await this.store.getAccounts();
     const logs: string[] = [];
+    let lastHeartbeat = accounts.length ? await this.store.getLastHeartbeatTime() : 0;
 
     for (const account of accounts) {
       const logPrefix = `[${account.access_key_id}]`;
@@ -145,8 +145,7 @@ export class Monitor {
       const isTransientState = TRANSIENT_STATES.includes(status);
       const currentInterval = isTransientState || statusTransformed ? 60 : userInterval;
       let shouldCheckApi = forceRefresh || currentTime - lastUpdate > currentInterval;
-      const mm = shanghaiHourMinute().m;
-      if (mm === '00') shouldCheckApi = true;
+      if (m === '00') shouldCheckApi = true;
 
       let newUpdateTime = currentTime;
 
@@ -164,8 +163,6 @@ export class Monitor {
         } else {
           traffic = newTraffic;
           apiStatusLog = '已更新';
-          await this.store.addHourlyStat(account.id, traffic);
-          await this.store.addDailyStat(account.id, traffic);
         }
 
         if (newStatus === 'Unknown') {
@@ -236,9 +233,9 @@ export class Monitor {
       const actionLog = actions.length ? actions.join(', ') : '无动作';
       const logLine = `${logPrefix} ${actionLog} | ${trafficDesc} | ${status} | ${apiStatusLog}`;
       // 心跳日志降频：有动作立即记；无动作时 5 分钟记一条（原版每分钟记，但 D1 按行计费，降频可大幅减少读写量）
-      const lastHb = await this.store.getLastHeartbeatTime();
-      if (actions.length > 0 || currentTime - lastHb >= 300) {
+      if (actions.length > 0 || currentTime - lastHeartbeat >= 300) {
         await this.store.addLog('heartbeat', logLine);
+        lastHeartbeat = currentTime;
       }
       logs.push(logLine);
     }
@@ -276,8 +273,6 @@ export class Monitor {
         }
         if (newTraffic >= 0) {
           traffic = newTraffic;
-          await this.store.addHourlyStat(account.id, traffic);
-          await this.store.addDailyStat(account.id, traffic);
         } else {
           newUpdateTime = lastUpdate;
         }
@@ -322,9 +317,6 @@ export class Monitor {
     let finalTraffic = traffic;
     if (traffic < 0) {
       finalTraffic = target.traffic_used;
-    } else {
-      await this.store.addHourlyStat(id, traffic);
-      await this.store.addDailyStat(id, traffic);
     }
     await this.store.updateAccountStatus(id, finalTraffic, status, currentTime);
 
@@ -395,27 +387,6 @@ export class Monitor {
       return { success: true, message: '指令发送成功' };
     }
     return { success: false, message: `操作执行失败: ${result}` };
-  }
-
-  /** 账户历史图表数据 — 对应 getAccountHistory */
-  async getAccountHistory(id: number): Promise<any> {
-    const account = await this.store.getAccountById(id);
-    if (!account) return { error: 'Account not found' };
-
-    const rawHourly = await this.store.getHourlyStats(id);
-    const chartHourly = rawHourly.map((r) => ({
-      time: shanghaiHM(r.recorded_at),
-      full_time: fmtTime(r.recorded_at),
-      value: Math.round(r.traffic * 1000) / 1000,
-    }));
-
-    const rawDaily = await this.store.getDailyStats(id);
-    const chartDaily = rawDaily.map((r) => ({
-      date: shanghaiDate(r.recorded_at),
-      value: Math.round(r.traffic * 1000) / 1000,
-    }));
-
-    return { history_24h: chartHourly, history_30d: chartDaily };
   }
 
   /** 费用信息（带缓存）— 对应 safeGetBillingInfo */

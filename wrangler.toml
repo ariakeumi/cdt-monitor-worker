@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
-# 静态面板 (原版 template.html + vue + echarts)
+# 静态面板 (HTML + Vue)
 [assets]
 directory = "./static"
 binding = "ASSETS"

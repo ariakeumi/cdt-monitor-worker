@@ -50,20 +50,6 @@ const SCHEMA_STATEMENTS = [
     attempt_time INTEGER
   )`,
   `CREATE INDEX IF NOT EXISTS idx_login_ip_time ON login_attempts (ip, attempt_time)`,
-  `CREATE TABLE IF NOT EXISTS traffic_hourly (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    account_id INTEGER,
-    traffic REAL,
-    recorded_at INTEGER
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_traffic_hourly_unique ON traffic_hourly (account_id, recorded_at)`,
-  `CREATE TABLE IF NOT EXISTS traffic_daily (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    account_id INTEGER,
-    traffic REAL,
-    recorded_at INTEGER
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_traffic_daily_unique ON traffic_daily (account_id, recorded_at)`,
   `CREATE TABLE IF NOT EXISTS billing_cache (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER NOT NULL,
@@ -277,44 +263,6 @@ export class Store {
     await this.db.prepare('DELETE FROM login_attempts WHERE ip = ?').bind(ip).run();
   }
 
-  // ============ stats ============
-  async addHourlyStat(accountId: number, traffic: number): Promise<void> {
-    const hourTs = Math.floor(now() / 3600) * 3600;
-    await this.db
-      .prepare('INSERT OR REPLACE INTO traffic_hourly (account_id, traffic, recorded_at) VALUES (?, ?, ?)')
-      .bind(accountId, traffic, hourTs)
-      .run();
-  }
-
-  async addDailyStat(accountId: number, traffic: number): Promise<void> {
-    const dayTs = shanghaiDayStart(now());
-    await this.db
-      .prepare('INSERT OR REPLACE INTO traffic_daily (account_id, traffic, recorded_at) VALUES (?, ?, ?)')
-      .bind(accountId, traffic, dayTs)
-      .run();
-  }
-
-  async getHourlyStats(accountId: number): Promise<{ traffic: number; recorded_at: number }[]> {
-    const { results } = await this.db
-      .prepare('SELECT traffic, recorded_at FROM traffic_hourly WHERE account_id = ? ORDER BY recorded_at DESC LIMIT 25')
-      .bind(accountId)
-      .all<any>();
-    return results.map((r) => ({ traffic: Number(r.traffic), recorded_at: Number(r.recorded_at) })).reverse();
-  }
-
-  async getDailyStats(accountId: number): Promise<{ traffic: number; recorded_at: number }[]> {
-    const { results } = await this.db
-      .prepare('SELECT traffic, recorded_at FROM traffic_daily WHERE account_id = ? ORDER BY recorded_at DESC LIMIT 31')
-      .bind(accountId)
-      .all<any>();
-    return results.map((r) => ({ traffic: Number(r.traffic), recorded_at: Number(r.recorded_at) })).reverse();
-  }
-
-  async pruneStats(): Promise<void> {
-    await this.db.prepare('DELETE FROM traffic_hourly WHERE recorded_at < ?').bind(now() - 48 * 3600).run();
-    await this.db.prepare('DELETE FROM traffic_daily WHERE recorded_at < ?').bind(now() - 60 * 86400).run();
-  }
-
   // ============ billing cache ============
   async setBillingCache(accountId: number, cacheType: string, billingCycle: string, data: any): Promise<void> {
     await this.db
@@ -344,10 +292,20 @@ export class Store {
   }
 }
 
-/** 东八区 (Asia/Shanghai) 格式化时间戳 → YYYY-MM-DD HH:mm:ss */
-export function fmtTime(ts: number): string {
-  const d = new Date(ts * 1000);
-  const parts = new Intl.DateTimeFormat('zh-CN', {
+// 现代上海时间为 UTC+8，直接偏移避免 Intl 在冷启动时的初始化开销。
+// 1992 年以前仍使用时区数据库，以兼容历史夏令时；格式器按需复用。
+const SHANGHAI_FIXED_OFFSET_SINCE = Date.UTC(1992, 0, 1) / 1000;
+let shanghaiFormatter: Intl.DateTimeFormat | undefined;
+
+function shanghaiParts(ts: number): Record<string, string> {
+  if (ts >= SHANGHAI_FIXED_OFFSET_SINCE) {
+    const iso = new Date((ts + 8 * 3600) * 1000).toISOString();
+    return {
+      year: iso.slice(0, 4), month: iso.slice(5, 7), day: iso.slice(8, 10),
+      hour: iso.slice(11, 13), minute: iso.slice(14, 16), second: iso.slice(17, 19),
+    };
+  }
+  shanghaiFormatter ??= new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
@@ -356,84 +314,40 @@ export function fmtTime(ts: number): string {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-  }).formatToParts(d);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value || '00';
-  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
+  });
+  const out: Record<string, string> = {};
+  for (const part of shanghaiFormatter.formatToParts(new Date(ts * 1000))) {
+    if (part.type !== 'literal') out[part.type] = part.value;
+  }
+  return out;
+}
+
+/** 东八区 (Asia/Shanghai) 格式化时间戳 → YYYY-MM-DD HH:mm:ss */
+export function fmtTime(ts: number): string {
+  const p = shanghaiParts(ts);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
 }
 
 /** 东八区 (Asia/Shanghai) 当前日期 YYYY-MM（阿里云账单周期按中国时区） */
 export function shanghaiMonth(): string {
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-  }).formatToParts(new Date());
-  const get = (t: string) => parts.find((p) => p.type === t)?.value || '0';
-  const pad = (s: string) => String(Number(s)).padStart(2, '0');
-  return `${get('year')}-${pad(get('month'))}`;
+  const p = shanghaiParts(Date.now() / 1000);
+  return `${p.year}-${p.month}`;
 }
 
-/** 东八区 (Asia/Shanghai) 指定时间戳 → HH:mm（图表横轴） */
-export function shanghaiHM(ts: number): string {
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(ts * 1000));
-  const h = parts.find((p) => p.type === 'hour')?.value || '00';
-  const m = parts.find((p) => p.type === 'minute')?.value || '00';
-  return `${h}:${m}`;
-}
-
-/** 东八区 (Asia/Shanghai) 指定时间戳 → YYYY-MM-DD（图表 30 天横轴） */
+/** 东八区 (Asia/Shanghai) 指定时间戳 → YYYY-MM-DD（每日维护标记） */
 export function shanghaiDate(ts: number): string {
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(ts * 1000));
-  const get = (t: string) => parts.find((p) => p.type === t)?.value || '00';
-  return `${get('year')}-${get('month')}-${get('day')}`;
-}
-
-/** 东八区 (Asia/Shanghai) 当天 0 点时间戳（日统计粒度） */
-export function shanghaiDayStart(ts: number): number {
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(ts * 1000));
-  const get = (t: string) => parts.find((p) => p.type === t)?.value || '0';
-  // 用 Date.UTC 构造东八区当天 0 点，再减去 8 小时得到 UTC 时间戳
-  return Math.floor(Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day'))) / 1000) - 8 * 3600;
+  const p = shanghaiParts(ts);
+  return `${p.year}-${p.month}-${p.day}`;
 }
 
 /** Asia/Shanghai 时区当前时间字符串 HH:mm */
 export function shanghaiTimeStr(): string {
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date());
-  const h = parts.find((p) => p.type === 'hour')?.value || '00';
-  const m = parts.find((p) => p.type === 'minute')?.value || '00';
-  return `${h}:${m}`;
+  const p = shanghaiParts(Date.now() / 1000);
+  return `${p.hour}:${p.minute}`;
 }
 
 /** Asia/Shanghai 时区当前 HH 是否等于指定值（用于凌晨维护窗口） */
 export function shanghaiHourMinute(): { h: string; m: string } {
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date());
-  return {
-    h: parts.find((p) => p.type === 'hour')?.value || '00',
-    m: parts.find((p) => p.type === 'minute')?.value || '00',
-  };
+  const p = shanghaiParts(Date.now() / 1000);
+  return { h: p.hour, m: p.minute };
 }

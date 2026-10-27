@@ -68,10 +68,6 @@ class Auth {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const store = new Store(env.DB);
-    // 首次运行自动建表（幂等，isolate 级缓存）
-    await store.ensureSchema().catch(() => {});
-    const monitor = new Monitor(store);
     const url = new URL(request.url);
     const action = url.searchParams.get('action') || '';
 
@@ -80,6 +76,11 @@ export default {
       const assetRes = await serveAsset(env, request);
       if (assetRes) return assetRes;
     }
+
+    // 静态资源无需访问 D1，避免冷启动时为 JS/CSS/HTML 执行建表逻辑。
+    const store = new Store(env.DB);
+    await store.ensureSchema().catch(() => {});
+    const monitor = new Monitor(store);
 
     // 仅保留 ?action= 路由（兼容原版前端模板）
     const auth = new Auth(store, env.SESSION_SECRET || 'cdt-monitor-default-secret');
@@ -205,11 +206,6 @@ export default {
           const types = tab === 'heartbeat' ? ['heartbeat'] : ['info', 'warning', 'error'];
           await store.clearLogsByTypes(types);
           return json({ success: true });
-        }
-        case 'get_history': {
-          const id = Number(url.searchParams.get('id') || 0);
-          const data = await monitor.getAccountHistory(id);
-          return json({ data });
         }
         case 'logout': {
           return json({ success: true }, 200, { 'Set-Cookie': `${COOKIE_NAME}=; Path=/; HttpOnly; Max-Age=0` });
