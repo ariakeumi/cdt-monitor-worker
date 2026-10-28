@@ -852,14 +852,8 @@
                                 </div>
                             </div>
                             <div class="flex items-center gap-3">
-                                <div v-if="logAutoRefresh" class="flex items-center gap-1.5">
-                                    <span class="relative flex h-2 w-2">
-                                        <span
-                                            class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                        <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                                    </span>
-                                    <span class="text-[10px] text-gray-400 font-mono">LIVE</span>
-                                </div>
+                                <button @click="fetchLogs"
+                                    class="text-xs text-gray-400 hover:text-gray-600 font-medium transition px-2">刷新</button>
                                 <button @click="clearLogs"
                                     class="text-xs text-red-400 hover:text-red-500 font-medium transition px-2">清空</button>
                             </div>
@@ -946,7 +940,7 @@
 
     <script src="vue.global.prod.js"></script>
     <script>
-        const { createApp, ref, onMounted, onUnmounted } = Vue;
+        const { createApp, ref, onMounted } = Vue;
 
         createApp({
             setup() {
@@ -969,8 +963,6 @@
                 // 日志相关
                 const systemLogs = ref([]);
                 const currentLogTab = ref('action');
-                const logAutoRefresh = ref(false);
-                let logInterval = null;
 
                 const cronWarning = ref(false);
 
@@ -1077,7 +1069,7 @@
                         if (data.logged_in) {
                             isAdmin.value = true;
                             fetchConfig();
-                            startLogPolling(); // 登录后开始轮询日志
+                            fetchLogs(); // 登录后加载一次日志，后续手动刷新
                         }
                         fetchData();
                     } catch (e) {
@@ -1186,7 +1178,6 @@
                             isAdmin.value = false;
                             config.value = null;
                             systemLogs.value = [];
-                            stopLogPolling();
                         });
                     } else {
                         showLoginModal.value = true;
@@ -1205,7 +1196,7 @@
                             showLoginModal.value = false;
                             passwordInput.value = '';
                             fetchConfig();
-                            startLogPolling();
+                            fetchLogs();
                         } else {
                             alert(data.message || '登录失败');
                         }
@@ -1288,21 +1279,6 @@
                     } catch (e) { console.error(e); }
                 };
 
-                const startLogPolling = () => {
-                    fetchLogs(); // 立即执行一次
-                    logAutoRefresh.value = true;
-                    if (logInterval) clearInterval(logInterval);
-                    logInterval = setInterval(fetchLogs, 30000); // 30秒刷新一次（原3秒，D1 按读取行数计费，降频可省大量配额）
-                };
-
-                const stopLogPolling = () => {
-                    logAutoRefresh.value = false;
-                    if (logInterval) {
-                        clearInterval(logInterval);
-                        logInterval = null;
-                    }
-                };
-
                 const sendTestEmail = async () => {
                     if (!config.value || !config.value.Notification.email) { alert('请先填写接收邮箱并保存配置'); return; }
                     if (!confirm('发送测试邮件将使用已保存的配置。继续发送吗？')) { return; }
@@ -1350,17 +1326,13 @@
                     checkInitStatus();
                 });
 
-                onUnmounted(() => {
-                    stopLogPolling();
-                });
-
                 return {
                     statusData, loading, isAdmin, checkingLogin, showLoginModal, passwordInput, config, initialized, loadingCheckInit, setupData, criticalError,
                     regionSearchFocus, aliyunRegions, refreshingMap, systemLogs, cronWarning,
                     isOperatingMap,
                     toggleInstance,
                     toggleAdmin, performLogin, saveConfig, sendTestEmail, sendingEmail, addAccount, removeAccount, getInstanceStatusColor, performSetup, refreshSingle, fetchLogs,
-                    currentLogTab, clearLogs, logAutoRefresh,
+                    currentLogTab, clearLogs,
                     currentNotifyTab, testingTelegram, testingWebhook, sendTestTelegram, sendTestWebhook
                 };
             }
